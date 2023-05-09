@@ -1,2 +1,4 @@
 PyPDF2==1.26.0
-office365==2.4.4
+azure-functions==1.6.0
+requests==2.26.0
+
