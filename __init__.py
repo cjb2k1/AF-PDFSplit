@@ -4,14 +4,11 @@ import tempfile
 from urllib.parse import urlparse
 
 import azure.functions as func
+import requests
 from PyPDF2 import PdfFileReader, PdfFileWriter
-from office365.runtime.auth.authentication_context import AuthenticationContext
-from office365.runtime.client_request import ClientRequest
-from office365.sharepoint.client_context import ClientContext
-from office365.sharepoint.file_creation_information import FileCreationInformation
 
 
-def main(req: func.HttpRequest, context: func.Out[func.InputStream]) -> func.HttpResponse:
+def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
 
     # Parse the input URI to get the SharePoint site URL and file path
@@ -21,18 +18,24 @@ def main(req: func.HttpRequest, context: func.Out[func.InputStream]) -> func.Htt
     file_path = uri_parts.path.strip('/')
     logging.info(f'Site URL: {site_url}, File path: {file_path}')
 
-    # Authenticate to SharePoint Online
-    auth_ctx = AuthenticationContext(site_url)
-    auth_ctx.acquire_token_for_app(client_id=req.headers['client-id'], client_secret=req.headers['client-secret'])
-    ctx = ClientContext(site_url, auth_ctx)
-    ctx.request_timeout = 1000000
-    request = ClientRequest(ctx)
+    # Authenticate to Microsoft Graph API
+    auth_url = f'https://login.microsoftonline.com/{os.environ["TenantId"]}/oauth2/v2.0/token'
+    auth_data = {
+        'grant_type': 'client_credentials',
+        'client_id': os.environ['ClientId'],
+        'client_secret': os.environ['ClientSecret'],
+        'scope': 'https://graph.microsoft.com/.default'
+    }
+    auth_response = requests.post(auth_url, data=auth_data)
+    auth_response.raise_for_status()
+    access_token = auth_response.json()['access_token']
+    headers = {'Authorization': f'Bearer {access_token}'}
 
     # Read PDF file from SharePoint Online
     with tempfile.NamedTemporaryFile(delete=False) as f:
         file_url = f'{site_url}/_api/web/GetFileByServerRelativeUrl(\'/{file_path}\')/$value'
-        response = request.execute_request_direct(url=file_url)
-        f.write(response.content)
+        file_response = requests.get(file_url, headers=headers)
+        f.write(file_response.content)
         pdf_file_path = f.name
 
     # Split PDF file into individual pages and save each page to SharePoint Online
@@ -52,14 +55,9 @@ def main(req: func.HttpRequest, context: func.Out[func.InputStream]) -> func.Htt
             with open(page_file_path, 'rb') as page_file:
                 page_file_name = f'{file_name}{file_name_suffix}_{page_num+1}{file_ext}'
                 logging.info(f'Saving page {page_num+1} to {page_file_name}')
-                file_info = FileCreationInformation()
-                file_info.content = page_file.read()
-                file_info.url = page_file_name
-                file_info.overwrite = True
-                folder_url = f'/_catalogs/masterpage/{os.path.dirname(file_path)}'
-                folder = ctx.web.get_folder_by_server_relative_url(folder_url)
-                folder.files.add(file_info)
-                ctx.execute_query()
+                file_url = f'{site_url}/_api/v2.0/drives/{os.environ["DriveId"]}/root:/{file_path[:-len(os.path.basename(file_path))]}{page_file_name}:/content'
+                file_response = requests.put(file_url, headers=headers, data=page_file)
+                file_response.raise_for_status()
 
             # Clean up temp file
             os.unlink(page_file_path)
@@ -68,3 +66,4 @@ def main(req: func.HttpRequest, context: func.Out[func.InputStream]) -> func.Htt
     os.unlink(pdf_file_path)
 
     return func.HttpResponse(f"{pdf_reader.getNumPages()} pages split and saved successfully to SharePoint.")
+``
