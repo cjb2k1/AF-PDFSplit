@@ -65,6 +65,6 @@ jobs:
           app-name: 'AF-PDFSplit'
           slot-name: 'Production'
           package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_8B0208AC465844228644BEBC98C9CB82 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_001A6B90FEEA47C99D28C7D7F90429F5 }}
           scm-do-build-during-deployment: true
           enable-oryx-build: true
