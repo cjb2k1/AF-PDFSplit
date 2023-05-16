@@ -1,69 +1,53 @@
 import logging
 import os
 import tempfile
-from urllib.parse import urlparse
-
-import azure.functions as func
-import requests
 from PyPDF2 import PdfFileReader, PdfFileWriter
+import azure.functions as func
 
-
-def main(req: func.HttpRequest) -> func.HttpResponse:
+def split_pdf(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a request.')
 
-    # Parse the input URI to get the SharePoint site URL and file path
-    uri = req.params.get('uri')
-    uri_parts = urlparse(uri)
-    site_url = f'{uri_parts.scheme}://{uri_parts.netloc}'
-    file_path = uri_parts.path.strip('/')
-    logging.info(f'Site URL: {site_url}, File path: {file_path}')
+    # Get the binary PDF data from the request body
+    pdf_binary = req.get_body()
 
-    # Authenticate to Microsoft Graph API
-    auth_url = f'https://login.microsoftonline.com/{os.environ["TenantId"]}/oauth2/v2.0/token'
-    auth_data = {
-        'grant_type': 'client_credentials',
-        'client_id': os.environ['ClientId'],
-        'client_secret': os.environ['ClientSecret'],
-        'scope': 'https://graph.microsoft.com/.default'
-    }
-    auth_response = requests.post(auth_url, data=auth_data)
-    auth_response.raise_for_status()
-    access_token = auth_response.json()['access_token']
-    headers = {'Authorization': f'Bearer {access_token}'}
+    # Create a temporary directory to store the split PDF pages
+    temp_dir = tempfile.mkdtemp()
 
-    # Read PDF file from SharePoint Online
-    with tempfile.NamedTemporaryFile(delete=False) as f:
-        file_url = f'{site_url}/_api/web/GetFileByServerRelativeUrl(\'/{file_path}\')/$value'
-        file_response = requests.get(file_url, headers=headers)
-        f.write(file_response.content)
-        pdf_file_path = f.name
+    try:
+        # Split PDF file into individual pages
+        pdf_reader = PdfFileReader(pdf_binary)
+        num_pages = pdf_reader.getNumPages()
 
-    # Split PDF file into individual pages and save each page to SharePoint Online
-    with open(pdf_file_path, 'rb') as pdf_file:
-        pdf_reader = PdfFileReader(pdf_file)
-        file_name, file_ext = os.path.splitext(os.path.basename(file_path))
-        file_name_suffix = f'_part_{pdf_reader.getNumPages()}'
-        for page_num in range(pdf_reader.getNumPages()):
+        # Create a list to store the binary data of the individual PDF pages
+        page_data = []
+
+        # Split the PDF into pages and save each page as a separate PDF file
+        for page_num in range(num_pages):
             # Create a new PDF file with a single page
             pdf_writer = PdfFileWriter()
             pdf_writer.addPage(pdf_reader.getPage(page_num))
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as f:
-                pdf_writer.write(f)
-                page_file_path = f.name
-            
-            # Save the new PDF file to SharePoint Online with the same metadata and filename
-            with open(page_file_path, 'rb') as page_file:
-                page_file_name = f'{file_name}{file_name_suffix}_{page_num+1}{file_ext}'
-                logging.info(f'Saving page {page_num+1} to {page_file_name}')
-                file_url = f'{site_url}/_api/v2.0/drives/{os.environ["DriveId"]}/root:/{file_path[:-len(os.path.basename(file_path))]}{page_file_name}:/content'
-                file_response = requests.put(file_url, headers=headers, data=page_file)
-                file_response.raise_for_status()
 
-            # Clean up temp file
-            os.unlink(page_file_path)
+            # Generate a unique filename for the page
+            page_filename = f'page_{page_num + 1}.pdf'
+            page_filepath = os.path.join(temp_dir, page_filename)
 
-    # Clean up temp file
-    os.unlink(pdf_file_path)
+            # Save the page as a separate PDF file
+            with open(page_filepath, 'wb') as page_file:
+                pdf_writer.write(page_file)
 
-    return func.HttpResponse(f"{pdf_reader.getNumPages()} pages split and saved successfully to SharePoint.")
-``
+            # Read the binary data of the page file
+            with open(page_filepath, 'rb') as page_file:
+                page_binary_data = page_file.read()
+
+            # Add the binary data to the list
+            page_data.append(page_binary_data)
+
+        # Return the list of individual PDF page binary data as the response
+        return func.HttpResponse(body=page_data, status_code=200, mimetype='application/pdf')
+
+    finally:
+        # Clean up the temporary directory
+        for filename in os.listdir(temp_dir):
+            filepath = os.path.join(temp_dir, filename)
+            os.remove(filepath)
+        os.rmdir(temp_dir)
